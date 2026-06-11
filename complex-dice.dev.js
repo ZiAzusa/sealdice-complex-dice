@@ -1240,6 +1240,11 @@ class Interpreter {
     return this._readVariableWithPolicy(name, this._canUseImplicitSealFallback());
   }
 
+  _readExplicitSealVariable(name) {
+    const resolvedName = this._resolveSealVariableName(name);
+    return this._evalSealVariable(resolvedName);
+  }
+
   _readVariableWithPolicy(name, allowSealFallback) {
     const localValue = this._findScopedValue(name);
     if (localValue.found) {
@@ -1256,6 +1261,12 @@ class Interpreter {
 
   _writeVariable(name, value) {
     return this._writeVariableWithPolicy(name, value, this._canUseImplicitSealFallback());
+  }
+
+  _writeExplicitSealVariable(name, value) {
+    const targetName = this._assignAnySealVariable(name, value);
+    this.sealVarCache[targetName] = value;
+    return value;
   }
 
   _writeVariableWithPolicy(name, value, allowSealFallback) {
@@ -2023,11 +2034,14 @@ function createBuiltins(diceFn, variableApi) {
         if (typeof text !== "string") {
           throw new Error("wchoose 函数的奇数位参数必须为字符串");
         }
-        if (!Number.isInteger(weight) || weight <= 0) {
-          throw new Error("wchoose 函数的偶数位参数必须为正整数权重");
+        if (!Number.isSafeInteger(weight) || weight <= 0) {
+          throw new Error("wchoose 函数的偶数位参数必须为正安全整数权重");
         }
 
         totalWeight += weight;
+        if (!Number.isSafeInteger(totalWeight) || totalWeight > MAX_WCHOOSE_TOTAL_WEIGHT) {
+          throw new Error("wchoose 权重总和过大（最大 " + MAX_WCHOOSE_TOTAL_WEIGHT + "）");
+        }
         entries.push({ text, weight });
       }
 
@@ -2233,6 +2247,7 @@ const MAX_CALL_DEPTH = 64;
 const MAX_FUNCTION_PARAMS = 16;
 const MAX_STRING_LENGTH = 4096;
 const MAX_OUTPUT_LENGTH = 512;
+const MAX_WCHOOSE_TOTAL_WEIGHT = 1000000;
 const DEFAULT_OUTPUT_TEMPLATE = "由于\n```\n{expr}\n```\n{user} 得到了结果\n{result}";
 
 function evaluate(source, diceFn, ctx) {
@@ -2249,10 +2264,10 @@ function evaluate(source, diceFn, ctx) {
   });
   interpreter.builtins = createBuiltins(diceFn, {
     getExplicit(name) {
-      return interpreter._readVariableWithPolicy(name, true);
+      return interpreter._readExplicitSealVariable(name);
     },
     setExplicit(name, value) {
-      return interpreter._writeVariableWithPolicy(name, value, true);
+      return interpreter._writeExplicitSealVariable(name, value);
     },
     ensureStringSize(value, op) {
       return interpreter._ensureStringSize(value, op);
