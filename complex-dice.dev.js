@@ -28,11 +28,19 @@ const TokenType = {
   BREAK:     "BREAK",
   CONTINUE:  "CONTINUE",
   PLUS:      "PLUS",
+  PLUS_PLUS: "PLUS_PLUS",
+  PLUS_ASSIGN: "PLUS_ASSIGN",
   MINUS:     "MINUS",
+  MINUS_MINUS: "MINUS_MINUS",
+  MINUS_ASSIGN: "MINUS_ASSIGN",
   STAR:      "STAR",
+  STAR_ASSIGN: "STAR_ASSIGN",
   SLASH:     "SLASH",
   FLOOR_DIV: "FLOOR_DIV",
+  SLASH_ASSIGN: "SLASH_ASSIGN",
+  FLOOR_DIV_ASSIGN: "FLOOR_DIV_ASSIGN",
   PERCENT:   "PERCENT",
+  PERCENT_ASSIGN: "PERCENT_ASSIGN",
   BANG:      "BANG",
   GT:        "GT",
   GTE:       "GTE",
@@ -279,10 +287,25 @@ class Lexer {
   _readOperator() {
     const ch = this.source[this.pos];
 
+    // 三字符运算符
+    if (this.pos + 2 < this.source.length) {
+      const three = ch + this.source[this.pos + 1] + this.source[this.pos + 2];
+      switch (three) {
+        case "//=": this.pos += 3; return { type: TokenType.FLOOR_DIV_ASSIGN, value: "//=" };
+      }
+    }
+
     // 双字符运算符
     if (this.pos + 1 < this.source.length) {
       const two = ch + this.source[this.pos + 1];
       switch (two) {
+        case "++": this.pos += 2; return { type: TokenType.PLUS_PLUS, value: "++" };
+        case "--": this.pos += 2; return { type: TokenType.MINUS_MINUS, value: "--" };
+        case "+=": this.pos += 2; return { type: TokenType.PLUS_ASSIGN, value: "+=" };
+        case "-=": this.pos += 2; return { type: TokenType.MINUS_ASSIGN, value: "-=" };
+        case "*=": this.pos += 2; return { type: TokenType.STAR_ASSIGN, value: "*=" };
+        case "/=": this.pos += 2; return { type: TokenType.SLASH_ASSIGN, value: "/=" };
+        case "%=": this.pos += 2; return { type: TokenType.PERCENT_ASSIGN, value: "%=" };
         case ">=": this.pos += 2; return { type: TokenType.GTE, value: ">=" };
         case "<=": this.pos += 2; return { type: TokenType.LTE, value: "<=" };
         case "==": this.pos += 2; return { type: TokenType.EQ,  value: "==" };
@@ -356,6 +379,7 @@ const ASTType = {
   BREAK_STMT:        "BreakStmt",
   CONTINUE_STMT:     "ContinueStmt",
   ASSIGN_EXPR:       "AssignExpr",
+  UPDATE_EXPR:       "UpdateExpr",
   NUMBER_LITERAL:    "NumberLiteral",
   STRING_LITERAL:    "StringLiteral",
   BOOLEAN_LITERAL:   "BooleanLiteral",
@@ -626,7 +650,16 @@ class Parser {
 
   _parseAssignment() {
     const left = this._parseConditional();
-    if (!this._match(TokenType.ASSIGN)) {
+    const assignTok = this._match(
+      TokenType.ASSIGN,
+      TokenType.PLUS_ASSIGN,
+      TokenType.MINUS_ASSIGN,
+      TokenType.STAR_ASSIGN,
+      TokenType.SLASH_ASSIGN,
+      TokenType.FLOOR_DIV_ASSIGN,
+      TokenType.PERCENT_ASSIGN
+    );
+    if (!assignTok) {
       return left;
     }
     if (left.type !== ASTType.VARIABLE_REF && left.type !== ASTType.MEMBER_EXPR) {
@@ -635,6 +668,7 @@ class Parser {
     return {
       type: ASTType.ASSIGN_EXPR,
       target: left,
+      operator: assignTok.value,
       value: this._parseAssignment(),
     };
   }
@@ -727,9 +761,20 @@ class Parser {
 
   // 一元运算 -x, !x
   _parseUnary() {
-    const tok = this._match(TokenType.MINUS, TokenType.BANG);
+    const tok = this._match(TokenType.PLUS_PLUS, TokenType.MINUS_MINUS, TokenType.MINUS, TokenType.BANG);
     if (tok) {
       const argument = this._parseUnary();
+      if (tok.type === TokenType.PLUS_PLUS || tok.type === TokenType.MINUS_MINUS) {
+        if (argument.type !== ASTType.VARIABLE_REF && argument.type !== ASTType.MEMBER_EXPR) {
+          throw new Error("自增自减语法错误: 目标必须是变量或数组成员");
+        }
+        return {
+          type: ASTType.UPDATE_EXPR,
+          operator: tok.value,
+          argument,
+          prefix: true,
+        };
+      }
       return { type: ASTType.UNARY_EXPR, operator: tok.value, argument };
     }
     return this._parsePostfix();
@@ -740,6 +785,19 @@ class Parser {
     let expr = this._parsePrimary();
 
     while (true) {
+      const updateTok = this._match(TokenType.PLUS_PLUS, TokenType.MINUS_MINUS);
+      if (updateTok) {
+        if (expr.type !== ASTType.VARIABLE_REF && expr.type !== ASTType.MEMBER_EXPR) {
+          throw new Error("自增自减语法错误: 目标必须是变量或数组成员");
+        }
+        expr = {
+          type: ASTType.UPDATE_EXPR,
+          operator: updateTok.value,
+          argument: expr,
+          prefix: false,
+        };
+        continue;
+      }
       if (this._current().type === TokenType.LPAREN) {
         this._advance();
         const args = [];
@@ -924,6 +982,9 @@ class Interpreter {
       case ASTType.ASSIGN_EXPR:
         return this._evalAssign(node);
 
+      case ASTType.UPDATE_EXPR:
+        return this._evalUpdate(node);
+
       case ASTType.NUMBER_LITERAL:
         return node.value;
 
@@ -983,8 +1044,18 @@ class Interpreter {
   }
 
   _evalAssign(node) {
-    const value = this.eval(node.value);
+    const value = node.operator && node.operator !== "="
+      ? this._evalCompoundAssignmentValue(node)
+      : this.eval(node.value);
     return this._writeAssignable(node.target, value);
+  }
+
+  _evalUpdate(node) {
+    const current = this._readAssignable(node.argument);
+    this._checkNumber(current, node.operator);
+    const next = node.operator === "++" ? current + 1 : current - 1;
+    this._writeAssignable(node.argument, next);
+    return node.prefix ? next : current;
   }
 
   _evalVariableRef(node) {
@@ -1239,6 +1310,16 @@ class Interpreter {
     throw new Error("赋值语法错误: 左侧不可赋值");
   }
 
+  _readAssignable(target) {
+    if (target.type === ASTType.VARIABLE_REF) {
+      return this._readVariable(target.name);
+    }
+    if (target.type === ASTType.MEMBER_EXPR) {
+      return this._evalMember(target);
+    }
+    throw new Error("赋值语法错误: 左侧不可读取");
+  }
+
   _writeMember(node, value) {
     const object = this.eval(node.object);
     const property = this._resolveMemberKey(node, object);
@@ -1396,6 +1477,49 @@ class Interpreter {
         return !this._toBool(value);
       default:
         throw new Error("内部错误: 未知的一元运算符 " + node.operator);
+    }
+  }
+
+  _evalCompoundAssignmentValue(node) {
+    const current = this._readAssignable(node.target);
+    const next = this.eval(node.value);
+
+    switch (node.operator) {
+      case "+=":
+        if (this._isString(current) || this._isString(next)) {
+          return this._ensureStringSize(String(current) + String(next), "+=");
+        }
+        this._checkNumber(current, "+=");
+        this._checkNumber(next, "+=");
+        return current + next;
+      case "-=":
+        if (this._isString(current)) {
+          return String(current).replace(String(next), "");
+        }
+        this._checkNumber(current, "-=");
+        this._checkNumber(next, "-=");
+        return current - next;
+      case "*=":
+        this._checkNumber(current, "*=");
+        this._checkNumber(next, "*=");
+        return current * next;
+      case "/=":
+        this._checkNumber(current, "/=");
+        this._checkNumber(next, "/=");
+        if (next === 0) throw new Error("除数不能为零");
+        return current / next;
+      case "//=":
+        this._checkNumber(current, "//=");
+        this._checkNumber(next, "//=");
+        if (next === 0) throw new Error("除数不能为零");
+        return Math.floor(current / next);
+      case "%=":
+        this._checkNumber(current, "%=");
+        this._checkNumber(next, "%=");
+        if (next === 0) throw new Error("取模运算右侧不能为零");
+        return current % next;
+      default:
+        throw new Error("内部错误: 未知的复合赋值运算符 " + node.operator);
     }
   }
 
@@ -2322,6 +2446,9 @@ function getAstDepth(root) {
         stack.push({ node: current.node.target, depth: current.depth + 1 });
         stack.push({ node: current.node.value, depth: current.depth + 1 });
         break;
+      case ASTType.UPDATE_EXPR:
+        stack.push({ node: current.node.argument, depth: current.depth + 1 });
+        break;
       case ASTType.ARRAY_LITERAL:
         for (let i = 0; i < current.node.elements.length; i++) {
           stack.push({ node: current.node.elements[i], depth: current.depth + 1 });
@@ -2427,9 +2554,8 @@ function main() {
       } else if (msg && msg.sender && msg.sender.nickname) {
         userName = msg.sender.nickname;
       }
-      const resultText = composeResultText(evaluation.output, result);
+      const resultText = clipTail(composeResultText(evaluation.output, result), MAX_OUTPUT_LENGTH);
       let rendered = formatTemplate(DEFAULT_OUTPUT_TEMPLATE, exprText, userName, resultText);
-      rendered = clipTail(rendered, MAX_OUTPUT_LENGTH);
       seal.replyToSender(ctx, msg, rendered);
       return seal.ext.newCmdExecuteResult(true);
 
