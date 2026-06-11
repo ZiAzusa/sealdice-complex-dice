@@ -81,7 +81,7 @@ class Lexer {
       }
       if (ch === "\n") {
         this.pos++;
-        if (this.parenDepth === 0 && this.bracketDepth === 0 && this.braceDepth === 0) {
+        if (this.parenDepth === 0 && this.bracketDepth === 0) {
           this.tokens.push({ type: TokenType.SEMI, value: ";" });
         }
         continue;
@@ -91,7 +91,7 @@ class Lexer {
         if (this.pos < this.source.length && this.source[this.pos] === "\n") {
           this.pos++;
         }
-        if (this.parenDepth === 0 && this.bracketDepth === 0 && this.braceDepth === 0) {
+        if (this.parenDepth === 0 && this.bracketDepth === 0) {
           this.tokens.push({ type: TokenType.SEMI, value: ";" });
         }
         continue;
@@ -758,6 +758,19 @@ class Parser {
 
   // 原子表达式: NUMBER, STRING, BOOLEAN, ARRAY, IDENT, ( expr )
   _parsePrimary() {
+    if (this._current().type === TokenType.IF) {
+      return this._parseIfStatement();
+    }
+    if (this._current().type === TokenType.WHILE) {
+      return this._parseWhileStatement();
+    }
+    if (this._current().type === TokenType.FOR) {
+      return this._parseForStatement();
+    }
+    if (this._current().type === TokenType.LBRACE) {
+      return this._parseBlock();
+    }
+
     // 括号表达式
     if (this._match(TokenType.LPAREN)) {
       const expr = this._parseConditional();
