@@ -604,30 +604,12 @@ class Interpreter {
   }
 
   _evalAssign(node) {
-    if (Object.prototype.hasOwnProperty.call(this.builtins, node.name)) {
-      throw new Error("不能给内置函数赋值: " + node.name);
-    }
-
     const value = this.eval(node.value);
-    if (Object.prototype.hasOwnProperty.call(this.scope, node.name)) {
-      this.scope[node.name] = value;
-      return value;
-    }
-
-    const targetName = this._assignAnySealVariable(node.name, value);
-    this.sealVarCache[targetName] = value;
-    return value;
+    return this._writeVariable(node.name, value);
   }
 
   _evalVariableRef(node) {
-    const name = node.name;
-
-    if (Object.prototype.hasOwnProperty.call(this.scope, name)) {
-      return this.scope[name];
-    }
-
-    const resolvedName = this._resolveSealVariableName(name);
-    return this._evalSealVariable(resolvedName);
+    return this._readVariable(node.name);
   }
 
   _evalSealVariable(name) {
@@ -757,6 +739,30 @@ class Interpreter {
       return typeof actual === "number" && actual === expected;
     }
     return String(actual) === expected;
+  }
+
+  _readVariable(name) {
+    if (Object.prototype.hasOwnProperty.call(this.scope, name)) {
+      return this.scope[name];
+    }
+
+    const resolvedName = this._resolveSealVariableName(name);
+    return this._evalSealVariable(resolvedName);
+  }
+
+  _writeVariable(name, value) {
+    if (Object.prototype.hasOwnProperty.call(this.builtins, name)) {
+      throw new Error("不能给内置函数赋值: " + name);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(this.scope, name)) {
+      this.scope[name] = value;
+      return value;
+    }
+
+    const targetName = this._assignAnySealVariable(name, value);
+    this.sealVarCache[targetName] = value;
+    return value;
   }
 
   _toBool(value) {
@@ -1143,8 +1149,16 @@ function evaluate(source, diceFn, ctx) {
   if (getAstDepth(ast) > MAX_AST_DEPTH) {
     throw new Error("表达式嵌套过深（最大 " + MAX_AST_DEPTH + " 层）");
   }
-  const builtins = createBuiltins(diceFn);
+  const builtins = createBuiltins(diceFn, null);
   const interpreter = new Interpreter(builtins, MAX_VARIABLES, ctx);
+  interpreter.builtins = createBuiltins(diceFn, {
+    get(name) {
+      return interpreter._readVariable(name);
+    },
+    set(name, value) {
+      return interpreter._writeVariable(name, value);
+    },
+  });
   return interpreter.eval(ast);
 }
 
@@ -1215,9 +1229,9 @@ function main() {
   cmdCd.help = "复杂骰子表达式求值\n" +
                "用法: .cd <表达式>\n" +
                "支持: 多行表达式 auto 临时变量 Unicode 变量 通用赋值 海豹变量 + - * / % 比较 逻辑 三元 字符串拼接\n" +
-               "函数: dice(\"1d20\") max() min() floor() ceil() round() abs() str() choose() wchoose()\n" +
+               "函数: dice(\"1d20\") max() min() floor() ceil() round() abs() str() get() set() choose() wchoose()\n" +
                "示例: .cd auto 攻击 = dice(\"1d20\")\nauto 总值 = 攻击 + 5\n总值 > 10 ? \"命中\" : \"未命中\"\n" +
-               "示例: .cd HP = HP + 10";
+               "示例: .cd set(\"HP\", get(\"HP\") + 10)";
   cmdCd.allowDelegate = true;
   cmdCd.disabledInPrivate = false;
 
