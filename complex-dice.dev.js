@@ -873,6 +873,7 @@ class Interpreter {
     this.callDepth = 0;
     this.loopDepth = 0;
     this.functionDepth = 0;
+    this.outputBuffer = "";
   }
 
   eval(node) {
@@ -1606,6 +1607,12 @@ class Interpreter {
     return value;
   }
 
+  _appendOutputLine(value) {
+    const text = String(value).replace(/\r\n?/g, "\n").replace(/\n/g, " ");
+    this.outputBuffer += text + "\n";
+    this.outputBuffer = clipTail(this.outputBuffer, this.limits.maxOutputLength);
+  }
+
   _currentScope() {
     return this.scopes[this.scopes.length - 1];
   }
@@ -1826,6 +1833,14 @@ function createBuiltins(diceFn, variableApi) {
     trim(args) {
       if (args.length !== 1 || typeof args[0] !== "string") throw new Error("trim 函数需要 1 个字符串参数");
       return variableApi.ensureStringSize(args[0].trim(), "trim");
+    },
+
+    print(args) {
+      if (args.length !== 1) {
+        throw new Error("print 函数需要 1 个参数");
+      }
+      variableApi.appendOutputLine(args[0]);
+      return args[0];
     },
 
     eval(args) {
@@ -2091,6 +2106,7 @@ const MAX_ARRAY_LENGTH = 256;
 const MAX_CALL_DEPTH = 64;
 const MAX_FUNCTION_PARAMS = 16;
 const MAX_STRING_LENGTH = 4096;
+const MAX_OUTPUT_LENGTH = 512;
 const DEFAULT_OUTPUT_TEMPLATE = "由于\n```\n{expr}\n```\n{user} 得到了结果\n{result}";
 
 function evaluate(source, diceFn, ctx) {
@@ -2103,6 +2119,7 @@ function evaluate(source, diceFn, ctx) {
     maxCallDepth: MAX_CALL_DEPTH,
     maxFunctionParams: MAX_FUNCTION_PARAMS,
     maxStringLength: MAX_STRING_LENGTH,
+    maxOutputLength: MAX_OUTPUT_LENGTH,
   });
   interpreter.builtins = createBuiltins(diceFn, {
     getExplicit(name) {
@@ -2114,11 +2131,17 @@ function evaluate(source, diceFn, ctx) {
     ensureStringSize(value, op) {
       return interpreter._ensureStringSize(value, op);
     },
+    appendOutputLine(value) {
+      return interpreter._appendOutputLine(value);
+    },
     evalSource(source) {
       return interpreter._evalSource(source);
     },
   });
-  return interpreter.eval(ast);
+  return {
+    value: interpreter.eval(ast),
+    output: interpreter.outputBuffer,
+  };
 }
 
 function parseAndValidateSource(source) {
@@ -2137,6 +2160,13 @@ function parseAndValidateSource(source) {
     throw new Error("表达式嵌套过深（最大 " + MAX_AST_DEPTH + " 层）");
   }
   return ast;
+}
+
+function clipTail(text, maxLength) {
+  if (typeof text !== "string") {
+    text = String(text);
+  }
+  return text.length <= maxLength ? text : text.slice(text.length - maxLength);
 }
 
 function prepareEvalSource(source) {
@@ -2336,16 +2366,17 @@ function main() {
   cmdCd.name = "cd";
   cmdCd.help = "复杂骰子表达式求值\n" +
                "用法: .cd <表达式>\n" +
-               "实验支持: true/false if/else while for break continue function return 数组 [] push pop length eval #注释 三引号多行字符串\n" +
+               "实验支持: true/false if/else while for break continue function return 数组 [] push pop length eval print #注释 三引号多行字符串\n" +
                "作用域: block 建作用域, 数组按引用传参, 函数内默认不隐式访问海豹变量\n" +
                "变量规则: $g* 仅权限等级>=50可写; 指定海豹内置变量只读\n" +
-               "字符串: \"...\" 为单行, \"\"\"...\"\"\" 为多行\n" +
-               "安全限制: 执行步数/循环次数/数组长度/字符串长度/调用深度/函数参数数量均有限制\n" +
-               "示例: .cd function fib(n) { if (n <= 1) { return n } return fib(n - 1) + fib(n - 2) }\nfib(6)\n" +
-               "示例: .cd { auto a = [1, 2]; a.push(3); a.length }\n" +
-               "示例: .cd \"\"\"第一行\n第二行\"\"\"\n" +
-               "示例: .cd set(\"$g测试方法\", \"function fib(n) {\\n  if (n <= 1) {\\n    return n\\n  }\\n  return fib(n - 1) + fib(n - 2)\\n}\\nfib(6)\")\n" +
-               "示例: .cd eval(get(\"$g测试方法\"))";
+                "字符串: \"...\" 为单行, \"\"\"...\"\"\" 为多行\n" +
+               "安全限制: 执行步数/循环次数/数组长度/字符串长度/调用深度/函数参数数量均有限制; 输出仅保留最后512字符\n" +
+                "示例: .cd function fib(n) { if (n <= 1) { return n } return fib(n - 1) + fib(n - 2) }\nfib(6)\n" +
+                "示例: .cd { auto a = [1, 2]; a.push(3); a.length }\n" +
+                "示例: .cd \"\"\"第一行\n第二行\"\"\"\n" +
+               "示例: .cd print(\"第一行\")\nprint(\"第二行\")\n3 + 4\n" +
+                "示例: .cd set(\"$g测试方法\", \"function fib(n) {\\n  if (n <= 1) {\\n    return n\\n  }\\n  return fib(n - 1) + fib(n - 2)\\n}\\nfib(6)\")\n" +
+                "示例: .cd eval(get(\"$g测试方法\"))";
   cmdCd.allowDelegate = true;
   cmdCd.disabledInPrivate = false;
 
@@ -2377,7 +2408,8 @@ function main() {
         return num;
       };
 
-      const result = evaluate(exprText, diceFn, activeCtx);
+      const evaluation = evaluate(exprText, diceFn, activeCtx);
+      const result = evaluation.value;
       // 获取用户名
       let userName = "";
       if (activeCtx && activeCtx.player && activeCtx.player.name) {
@@ -2385,7 +2417,10 @@ function main() {
       } else if (msg && msg.sender && msg.sender.nickname) {
         userName = msg.sender.nickname;
       }
-      seal.replyToSender(ctx, msg, formatTemplate(DEFAULT_OUTPUT_TEMPLATE, exprText, userName, result));
+      let rendered = formatTemplate(DEFAULT_OUTPUT_TEMPLATE, exprText, userName, result);
+      rendered = evaluation.output ? evaluation.output + rendered : rendered;
+      rendered = clipTail(rendered, MAX_OUTPUT_LENGTH);
+      seal.replyToSender(ctx, msg, rendered);
       return seal.ext.newCmdExecuteResult(true);
 
     } catch (e) {
