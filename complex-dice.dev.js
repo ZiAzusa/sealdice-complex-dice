@@ -109,6 +109,12 @@ class Lexer {
         continue;
       }
 
+      // 单行注释
+      if (ch === "#") {
+        this._skipComment();
+        continue;
+      }
+
       // 标识符或关键字
       if (this._isIdentStart(ch)) {
         this.tokens.push(this._readIdent());
@@ -213,6 +219,14 @@ class Lexer {
                      .replace(/\\"/g, '"')
                      .replace(/\x00/g, "\\");
     return { type: TokenType.STRING, value: value };
+  }
+
+  _skipComment() {
+    while (this.pos < this.source.length &&
+           this.source[this.pos] !== "\n" &&
+           this.source[this.pos] !== "\r") {
+      this.pos++;
+    }
   }
 
   _readIdent() {
@@ -1487,6 +1501,30 @@ class Interpreter {
     }
   }
 
+  _evalSource(source) {
+    if (typeof source !== "string") {
+      throw new Error("eval 需要 1 个字符串参数");
+    }
+
+    const normalized = normalizePunctuation(source);
+    if (normalized.length > MAX_EXPR_LENGTH) {
+      throw new Error("表达式过长（最大 " + MAX_EXPR_LENGTH + " 字符）");
+    }
+
+    const lexer = new Lexer(normalized);
+    const tokens = lexer.tokenize();
+    const parser = new Parser(tokens);
+    const ast = parser.parse();
+    if (ast.type === ASTType.PROGRAM && ast.statements.length > MAX_STATEMENTS) {
+      throw new Error("语句数量过多（最大 " + MAX_STATEMENTS + " 条）");
+    }
+    if (getAstDepth(ast) > MAX_AST_DEPTH) {
+      throw new Error("表达式嵌套过深（最大 " + MAX_AST_DEPTH + " 层）");
+    }
+
+    return this.eval(ast);
+  }
+
   _checkNumber(value, op) {
     if (!this._isNumber(value)) {
       throw new Error("类型错误: 运算符 " + op + " 需要数值类型");
@@ -1757,6 +1795,13 @@ function createBuiltins(diceFn, variableApi) {
       return variableApi.ensureStringSize(args[0].trim(), "trim");
     },
 
+    eval(args) {
+      if (args.length !== 1 || typeof args[0] !== "string") {
+        throw new Error("eval 函数需要 1 个字符串参数");
+      }
+      return variableApi.evalSource(args[0]);
+    },
+
     // 显式读取变量: get("HP")
     get(args) {
       if (args.length !== 1 || typeof args[0] !== "string") {
@@ -1971,6 +2016,9 @@ function evaluate(source, diceFn, ctx) {
     ensureStringSize(value, op) {
       return interpreter._ensureStringSize(value, op);
     },
+    evalSource(source) {
+      return interpreter._evalSource(source);
+    },
   });
   return interpreter.eval(ast);
 }
@@ -2092,12 +2140,13 @@ function main() {
   cmdCd.name = "cd";
   cmdCd.help = "复杂骰子表达式求值\n" +
                "用法: .cd <表达式>\n" +
-               "实验支持: true/false if/else while for break continue function return 数组 [] push pop length\n" +
+               "实验支持: true/false if/else while for break continue function return 数组 [] push pop length eval #注释 多行字符串\n" +
                "作用域: block 建作用域, 数组按引用传参, 函数内默认不隐式访问海豹变量\n" +
                "安全限制: 执行步数/循环次数/数组长度/字符串长度/调用深度/函数参数数量均有限制\n" +
                "示例: .cd function fib(n) { if (n <= 1) { return n } return fib(n - 1) + fib(n - 2) }\nfib(6)\n" +
                "示例: .cd { auto a = [1, 2]; a.push(3); a.length }\n" +
-               "示例: .cd set(\"HP\", get(\"HP\") + 1)";
+               "示例: .cd set(\"$g测试方法\", \"function fib(n) {\\n  if (n <= 1) {\\n    return n\\n  }\\n  return fib(n - 1) + fib(n - 2)\\n}\\nfib(6)\")\n" +
+               "示例: .cd eval(get(\"$g测试方法\"))";
   cmdCd.allowDelegate = true;
   cmdCd.disabledInPrivate = false;
 
