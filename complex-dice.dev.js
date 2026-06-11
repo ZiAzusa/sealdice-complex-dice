@@ -1554,7 +1554,7 @@ class Interpreter {
     if (typeof source !== "string") {
       throw new Error("eval 需要 1 个字符串参数");
     }
-    const ast = parseAndValidateSource(source);
+    const ast = parseAndValidateSource(prepareEvalSource(source));
     return this.eval(ast);
   }
 
@@ -2137,6 +2137,86 @@ function parseAndValidateSource(source) {
     throw new Error("表达式嵌套过深（最大 " + MAX_AST_DEPTH + " 层）");
   }
   return ast;
+}
+
+function prepareEvalSource(source) {
+  let result = "";
+  let i = 0;
+  let inSingleString = false;
+  let inTripleString = false;
+  let escape = false;
+
+  while (i < source.length) {
+    const three = source.slice(i, i + 3);
+    const ch = source[i];
+
+    if (inTripleString) {
+      if (three === '"""') {
+        result += '"""';
+        i += 3;
+        inTripleString = false;
+        continue;
+      }
+      result += ch;
+      i++;
+      continue;
+    }
+
+    if (inSingleString) {
+      if (escape) {
+        result += ch;
+        escape = false;
+        i++;
+        continue;
+      }
+      if (ch === "\\") {
+        result += ch;
+        escape = true;
+        i++;
+        continue;
+      }
+      if (ch === '"') {
+        result += ch;
+        inSingleString = false;
+        i++;
+        continue;
+      }
+      if (ch === "\r") {
+        if (i + 1 < source.length && source[i + 1] === "\n") {
+          i++;
+        }
+        result += "\\n";
+        i++;
+        continue;
+      }
+      if (ch === "\n") {
+        result += "\\n";
+        i++;
+        continue;
+      }
+      result += ch;
+      i++;
+      continue;
+    }
+
+    if (three === '"""') {
+      result += '"""';
+      i += 3;
+      inTripleString = true;
+      continue;
+    }
+    if (ch === '"') {
+      result += ch;
+      inSingleString = true;
+      i++;
+      continue;
+    }
+
+    result += ch;
+    i++;
+  }
+
+  return result;
 }
 
 function getAstDepth(root) {
