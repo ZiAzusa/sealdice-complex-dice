@@ -105,7 +105,11 @@ class Lexer {
 
       // 字符串字面量
       if (ch === '"') {
-        this.tokens.push(this._readString());
+        if (this.source.slice(this.pos, this.pos + 3) === '"""') {
+          this.tokens.push(this._readTripleString());
+        } else {
+          this.tokens.push(this._readString());
+        }
         continue;
       }
 
@@ -200,6 +204,9 @@ class Lexer {
     this.pos++; // 跳过开头的 "
     let start = this.pos;
     while (this.pos < this.source.length && this.source[this.pos] !== '"') {
+      if (this.source[this.pos] === "\n" || this.source[this.pos] === "\r") {
+        throw new Error("单行字符串不能直接包含换行；如需多行字符串请使用三引号");
+      }
       // 支持转义
       if (this.source[this.pos] === "\\" && this.pos + 1 < this.source.length) {
         this.pos += 2; // 跳过转义符和被转义的字符
@@ -217,6 +224,24 @@ class Lexer {
                      .replace(/\\n/g, "\n")
                      .replace(/\\t/g, "\t")
                      .replace(/\\"/g, '"')
+                     .replace(/\x00/g, "\\");
+    return { type: TokenType.STRING, value: value };
+  }
+
+  _readTripleString() {
+    this.pos += 3; // 跳过开头的 """
+    let start = this.pos;
+    while (this.pos < this.source.length && this.source.slice(this.pos, this.pos + 3) !== '"""') {
+      this.pos++;
+    }
+    if (this.pos >= this.source.length) {
+      throw new Error("三引号字符串未闭合");
+    }
+    const raw = this.source.slice(start, this.pos);
+    this.pos += 3; // 跳过结尾的 """
+    const value = raw.replace(/\\\\/g, "\x00")
+                     .replace(/\\n/g, "\n")
+                     .replace(/\\t/g, "\t")
                      .replace(/\x00/g, "\\");
     return { type: TokenType.STRING, value: value };
   }
@@ -1062,6 +1087,8 @@ class Interpreter {
   }
 
   _assignSealVariable(name, value) {
+    this._assertSealVariableWritable(name);
+
     const type = typeof value;
     if (type !== "number" && type !== "string") {
       throw new Error("不支持的赋值类型: " + type);
@@ -1177,6 +1204,28 @@ class Interpreter {
     const targetName = this._assignAnySealVariable(name, value);
     this.sealVarCache[targetName] = value;
     return value;
+  }
+
+  _assertSealVariableWritable(name) {
+    if (this._isReadOnlySealVariable(name)) {
+      throw new Error("该海豹内置变量为只读: " + name);
+    }
+    if (this._isGroupScopedSealVariable(name) && !this._hasGroupWritePrivilege()) {
+      throw new Error("写入群变量需要权限等级 >= 50: " + name);
+    }
+  }
+
+  _isGroupScopedSealVariable(name) {
+    return /^\$g/u.test(name);
+  }
+
+  _isReadOnlySealVariable(name) {
+    const normalized = name.startsWith("$") ? name : "$" + name;
+    return READONLY_SEAL_VARIABLES.has(name) || READONLY_SEAL_VARIABLES.has(normalized);
+  }
+
+  _hasGroupWritePrivilege() {
+    return !!(this.ctx && typeof this.ctx.privilegeLevel === "number" && this.ctx.privilegeLevel >= 50);
   }
 
   _writeAssignable(target, value) {
@@ -1505,23 +1554,7 @@ class Interpreter {
     if (typeof source !== "string") {
       throw new Error("eval 需要 1 个字符串参数");
     }
-
-    const normalized = normalizePunctuation(source);
-    if (normalized.length > MAX_EXPR_LENGTH) {
-      throw new Error("表达式过长（最大 " + MAX_EXPR_LENGTH + " 字符）");
-    }
-
-    const lexer = new Lexer(normalized);
-    const tokens = lexer.tokenize();
-    const parser = new Parser(tokens);
-    const ast = parser.parse();
-    if (ast.type === ASTType.PROGRAM && ast.statements.length > MAX_STATEMENTS) {
-      throw new Error("语句数量过多（最大 " + MAX_STATEMENTS + " 条）");
-    }
-    if (getAstDepth(ast) > MAX_AST_DEPTH) {
-      throw new Error("表达式嵌套过深（最大 " + MAX_AST_DEPTH + " 层）");
-    }
-
+    const ast = parseAndValidateSource(source);
     return this.eval(ast);
   }
 
@@ -1881,11 +1914,25 @@ function createBuiltins(diceFn, variableApi) {
 const PUNCTUATION_MAP = {
   "（": "(",
   "）": ")",
+  "【": "[",
+  "】": "]",
+  "「": "{",
+  "」": "}",
+  "｛": "{",
+  "｝": "}",
+  "［": "[",
+  "］": "]",
   "，": ",",
+  "、": ",",
+  "。": ".",
   "；": ";",
   "：": ":",
   "？": "?",
   "！": "!",
+  "“": '"',
+  "”": '"',
+  "‘": "'",
+  "’": "'",
   "＋": "+",
   "－": "-",
   "＊": "*",
@@ -1896,47 +1943,111 @@ const PUNCTUATION_MAP = {
   "＝": "=",
   "＆": "&",
   "｜": "|",
+  "．": ".",
+  "～": "~",
+  "　": " ",
 };
+
+const READONLY_SEAL_VARIABLES = new Set([
+  "$t玩家",
+  "$t玩家_RAW",
+  "$tQQ昵称",
+  "$t账号ID",
+  "$t账号ID_RAW",
+  "$tQQ",
+  "$t群名",
+  "$t群号",
+  "$t群号_RAW",
+  "$t群组骰子面数",
+  "$t个人骰子面数",
+  "$t骰子账号",
+  "$t骰子昵称",
+  "$tDate",
+  "$tYear",
+  "$tMonth",
+  "$tDay",
+  "$tWeekday",
+  "$tHour",
+  "$tMinute",
+  "$tSecond",
+  "$tTimestamp",
+  "$t文本长度",
+  "$t平台",
+  "$t游戏模式",
+  "$t消息类型",
+  "$t当前记录",
+  "$t权限等级",
+  "$tMsgID",
+  "$t日志开启",
+  "娱乐:今日人品",
+  "常量:APPNAME",
+  "常量:VERSION",
+]);
 
 function normalizePunctuation(source) {
   let result = "";
   let inString = false;
+  let stringMode = "single";
   let escape = false;
   let stringEndChar = '"';
 
   for (let i = 0; i < source.length; i++) {
     const ch = source[i];
+    const three = source.slice(i, i + 3);
 
     if (inString) {
-      if (escape) {
+      if (stringMode === "triple") {
+        if (three === '"""') {
+          result += '"""';
+          i += 2;
+          inString = false;
+          stringMode = "single";
+          stringEndChar = '"';
+          continue;
+        }
         result += ch;
-        escape = false;
         continue;
-      }
-      if (ch === "\\") {
+      } else {
+        if (escape) {
+          result += ch;
+          escape = false;
+          continue;
+        }
+        if (ch === "\\") {
+          result += ch;
+          escape = true;
+          continue;
+        }
+        if (ch === stringEndChar) {
+          result += '"';
+          inString = false;
+          stringEndChar = '"';
+          continue;
+        }
         result += ch;
-        escape = true;
         continue;
       }
-      if (ch === stringEndChar) {
-        result += '"';
-        inString = false;
-        stringEndChar = '"';
-        continue;
-      }
-      result += ch;
-      continue;
     }
 
+    if (three === '"""') {
+      result += '"""';
+      i += 2;
+      inString = true;
+      stringMode = "triple";
+      stringEndChar = '"';
+      continue;
+    }
     if (ch === '"') {
       result += ch;
       inString = true;
+      stringMode = "single";
       stringEndChar = '"';
       continue;
     }
     if (ch === "“" || ch === "”") {
       result += '"';
       inString = true;
+      stringMode = "single";
       stringEndChar = "”";
       continue;
     }
@@ -1983,20 +2094,7 @@ const MAX_STRING_LENGTH = 4096;
 const DEFAULT_OUTPUT_TEMPLATE = "由于\n```\n{expr}\n```\n{user} 得到了结果\n{result}";
 
 function evaluate(source, diceFn, ctx) {
-  source = normalizePunctuation(source);
-  if (source.length > MAX_EXPR_LENGTH) {
-    throw new Error("表达式过长（最大 " + MAX_EXPR_LENGTH + " 字符）");
-  }
-  const lexer = new Lexer(source);
-  const tokens = lexer.tokenize();
-  const parser = new Parser(tokens);
-  const ast = parser.parse();
-  if (ast.type === ASTType.PROGRAM && ast.statements.length > MAX_STATEMENTS) {
-    throw new Error("语句数量过多（最大 " + MAX_STATEMENTS + " 条）");
-  }
-  if (getAstDepth(ast) > MAX_AST_DEPTH) {
-    throw new Error("表达式嵌套过深（最大 " + MAX_AST_DEPTH + " 层）");
-  }
+  const ast = parseAndValidateSource(source);
   const builtins = createBuiltins(diceFn, null);
   const interpreter = new Interpreter(builtins, MAX_VARIABLES, ctx, {
     maxExecutionSteps: MAX_EXECUTION_STEPS,
@@ -2021,6 +2119,24 @@ function evaluate(source, diceFn, ctx) {
     },
   });
   return interpreter.eval(ast);
+}
+
+function parseAndValidateSource(source) {
+  source = normalizePunctuation(source);
+  if (source.length > MAX_EXPR_LENGTH) {
+    throw new Error("表达式过长（最大 " + MAX_EXPR_LENGTH + " 字符）");
+  }
+  const lexer = new Lexer(source);
+  const tokens = lexer.tokenize();
+  const parser = new Parser(tokens);
+  const ast = parser.parse();
+  if (ast.type === ASTType.PROGRAM && ast.statements.length > MAX_STATEMENTS) {
+    throw new Error("语句数量过多（最大 " + MAX_STATEMENTS + " 条）");
+  }
+  if (getAstDepth(ast) > MAX_AST_DEPTH) {
+    throw new Error("表达式嵌套过深（最大 " + MAX_AST_DEPTH + " 层）");
+  }
+  return ast;
 }
 
 function getAstDepth(root) {
@@ -2140,11 +2256,14 @@ function main() {
   cmdCd.name = "cd";
   cmdCd.help = "复杂骰子表达式求值\n" +
                "用法: .cd <表达式>\n" +
-               "实验支持: true/false if/else while for break continue function return 数组 [] push pop length eval #注释 多行字符串\n" +
+               "实验支持: true/false if/else while for break continue function return 数组 [] push pop length eval #注释 三引号多行字符串\n" +
                "作用域: block 建作用域, 数组按引用传参, 函数内默认不隐式访问海豹变量\n" +
+               "变量规则: $g* 仅权限等级>=50可写; 指定海豹内置变量只读\n" +
+               "字符串: \"...\" 为单行, \"\"\"...\"\"\" 为多行\n" +
                "安全限制: 执行步数/循环次数/数组长度/字符串长度/调用深度/函数参数数量均有限制\n" +
                "示例: .cd function fib(n) { if (n <= 1) { return n } return fib(n - 1) + fib(n - 2) }\nfib(6)\n" +
                "示例: .cd { auto a = [1, 2]; a.push(3); a.length }\n" +
+               "示例: .cd \"\"\"第一行\n第二行\"\"\"\n" +
                "示例: .cd set(\"$g测试方法\", \"function fib(n) {\\n  if (n <= 1) {\\n    return n\\n  }\\n  return fib(n - 1) + fib(n - 2)\\n}\\nfib(6)\")\n" +
                "示例: .cd eval(get(\"$g测试方法\"))";
   cmdCd.allowDelegate = true;
