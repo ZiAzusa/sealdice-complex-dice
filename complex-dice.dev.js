@@ -1663,6 +1663,8 @@ class Interpreter {
   }
 }
 
+const NO_RESULT = { type: "no_result" };
+
 class BreakSignal extends Error {
   constructor() {
     super("break");
@@ -1840,7 +1842,7 @@ function createBuiltins(diceFn, variableApi) {
         throw new Error("print 函数需要 1 个参数");
       }
       variableApi.appendOutputLine(args[0]);
-      return args[0];
+      return NO_RESULT;
     },
 
     eval(args) {
@@ -2169,6 +2171,14 @@ function clipTail(text, maxLength) {
   return text.length <= maxLength ? text : text.slice(text.length - maxLength);
 }
 
+function composeResultText(output, value) {
+  let resultText = output || "";
+  if (value !== NO_RESULT) {
+    resultText += String(value);
+  }
+  return resultText.replace(/\n+$/g, "");
+}
+
 function prepareEvalSource(source) {
   let result = "";
   let i = 0;
@@ -2417,8 +2427,8 @@ function main() {
       } else if (msg && msg.sender && msg.sender.nickname) {
         userName = msg.sender.nickname;
       }
-      let rendered = formatTemplate(DEFAULT_OUTPUT_TEMPLATE, exprText, userName, result);
-      rendered = evaluation.output ? evaluation.output + rendered : rendered;
+      const resultText = composeResultText(evaluation.output, result);
+      let rendered = formatTemplate(DEFAULT_OUTPUT_TEMPLATE, exprText, userName, resultText);
       rendered = clipTail(rendered, MAX_OUTPUT_LENGTH);
       seal.replyToSender(ctx, msg, rendered);
       return seal.ext.newCmdExecuteResult(true);
