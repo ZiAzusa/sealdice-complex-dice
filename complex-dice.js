@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         complex-dice-v2
-// @author       shimakaze
-// @version      1.4.0
-// @description  复杂骰子表达式求值器。用法: .cd 表达式
+// @name         complex-dice-v2-dev
+// @author       shimakaze & ZiAzusa
+// @version      1.5.0-dev
+// @description  复杂骰子表达式求值器实验版。用法: .cd 表达式
 // @timestamp    1781136000
 // ==/UserScript==
 
@@ -17,6 +17,16 @@ const TokenType = {
   STRING:    "STRING",
   IDENT:     "IDENT",
   AUTO:      "AUTO",
+  TRUE:      "TRUE",
+  FALSE:     "FALSE",
+  IF:        "IF",
+  ELSE:      "ELSE",
+  WHILE:     "WHILE",
+  FOR:       "FOR",
+  FUNCTION:  "FUNCTION",
+  RETURN:    "RETURN",
+  BREAK:     "BREAK",
+  CONTINUE:  "CONTINUE",
   PLUS:      "PLUS",
   MINUS:     "MINUS",
   STAR:      "STAR",
@@ -37,7 +47,12 @@ const TokenType = {
   COLON:     "COLON",
   LPAREN:    "LPAREN",
   RPAREN:    "RPAREN",
+  LBRACE:    "LBRACE",
+  RBRACE:    "RBRACE",
+  LBRACKET:  "LBRACKET",
+  RBRACKET:  "RBRACKET",
   COMMA:     "COMMA",
+  DOT:       "DOT",
   SEMI:      "SEMI",
   EOF:       "EOF",
 };
@@ -51,6 +66,8 @@ class Lexer {
     this.pos = 0;
     this.tokens = [];
     this.parenDepth = 0;
+    this.bracketDepth = 0;
+    this.braceDepth = 0;
   }
 
   tokenize() {
@@ -64,7 +81,7 @@ class Lexer {
       }
       if (ch === "\n") {
         this.pos++;
-        if (this.parenDepth === 0) {
+        if (this.parenDepth === 0 && this.bracketDepth === 0) {
           this.tokens.push({ type: TokenType.SEMI, value: ";" });
         }
         continue;
@@ -74,7 +91,7 @@ class Lexer {
         if (this.pos < this.source.length && this.source[this.pos] === "\n") {
           this.pos++;
         }
-        if (this.parenDepth === 0) {
+        if (this.parenDepth === 0 && this.bracketDepth === 0) {
           this.tokens.push({ type: TokenType.SEMI, value: ";" });
         }
         continue;
@@ -88,7 +105,17 @@ class Lexer {
 
       // 字符串字面量
       if (ch === '"') {
-        this.tokens.push(this._readString());
+        if (this.source.slice(this.pos, this.pos + 3) === '"""') {
+          this.tokens.push(this._readTripleString());
+        } else {
+          this.tokens.push(this._readString());
+        }
+        continue;
+      }
+
+      // 单行注释
+      if (ch === "#") {
+        this._skipComment();
         continue;
       }
 
@@ -148,6 +175,11 @@ class Lexer {
            ch === "=" ||
            ch === "?" ||
            ch === ":" ||
+           ch === "[" ||
+           ch === "]" ||
+           ch === "{" ||
+           ch === "}" ||
+           ch === "." ||
            ch === "&" ||
            ch === "|";
   }
@@ -172,6 +204,9 @@ class Lexer {
     this.pos++; // 跳过开头的 "
     let start = this.pos;
     while (this.pos < this.source.length && this.source[this.pos] !== '"') {
+      if (this.source[this.pos] === "\n" || this.source[this.pos] === "\r") {
+        throw new Error("单行字符串不能直接包含换行；如需多行字符串请使用三引号");
+      }
       // 支持转义
       if (this.source[this.pos] === "\\" && this.pos + 1 < this.source.length) {
         this.pos += 2; // 跳过转义符和被转义的字符
@@ -193,16 +228,52 @@ class Lexer {
     return { type: TokenType.STRING, value: value };
   }
 
+  _readTripleString() {
+    this.pos += 3; // 跳过开头的 """
+    let start = this.pos;
+    while (this.pos < this.source.length && this.source.slice(this.pos, this.pos + 3) !== '"""') {
+      this.pos++;
+    }
+    if (this.pos >= this.source.length) {
+      throw new Error("三引号字符串未闭合");
+    }
+    const raw = this.source.slice(start, this.pos);
+    this.pos += 3; // 跳过结尾的 """
+    const value = raw.replace(/\\\\/g, "\x00")
+                     .replace(/\\n/g, "\n")
+                     .replace(/\\t/g, "\t")
+                     .replace(/\x00/g, "\\");
+    return { type: TokenType.STRING, value: value };
+  }
+
+  _skipComment() {
+    while (this.pos < this.source.length &&
+           this.source[this.pos] !== "\n" &&
+           this.source[this.pos] !== "\r") {
+      this.pos++;
+    }
+  }
+
   _readIdent() {
     let start = this.pos;
     while (this.pos < this.source.length && this._isIdentPart(this.source[this.pos])) {
       this.pos++;
     }
     const value = this.source.slice(start, this.pos);
-    if (value === "auto") {
-      return { type: TokenType.AUTO, value: value };
+    switch (value) {
+      case "auto": return { type: TokenType.AUTO, value: value };
+      case "true": return { type: TokenType.TRUE, value: true };
+      case "false": return { type: TokenType.FALSE, value: false };
+      case "if": return { type: TokenType.IF, value: value };
+      case "else": return { type: TokenType.ELSE, value: value };
+      case "while": return { type: TokenType.WHILE, value: value };
+      case "for": return { type: TokenType.FOR, value: value };
+      case "function": return { type: TokenType.FUNCTION, value: value };
+      case "return": return { type: TokenType.RETURN, value: value };
+      case "break": return { type: TokenType.BREAK, value: value };
+      case "continue": return { type: TokenType.CONTINUE, value: value };
+      default: return { type: TokenType.IDENT, value: value };
     }
-    return { type: TokenType.IDENT, value: value };
   }
 
   _readOperator() {
@@ -244,6 +315,24 @@ class Lexer {
           this.parenDepth--;
         }
         return { type: TokenType.RPAREN,   value: ")" };
+      case "[":
+        this.bracketDepth++;
+        return { type: TokenType.LBRACKET, value: "[" };
+      case "]":
+        if (this.bracketDepth > 0) {
+          this.bracketDepth--;
+        }
+        return { type: TokenType.RBRACKET, value: "]" };
+      case "{":
+        this.braceDepth++;
+        return { type: TokenType.LBRACE, value: "{" };
+      case "}":
+        if (this.braceDepth > 0) {
+          this.braceDepth--;
+        }
+        return { type: TokenType.RBRACE, value: "}" };
+      case ".":
+        return { type: TokenType.DOT, value: "." };
       case ",": return { type: TokenType.COMMA,    value: "," };
       case ";": return { type: TokenType.SEMI,     value: ";" };
       default:  this.pos--; return null;
@@ -256,10 +345,22 @@ class Lexer {
 // ============================
 const ASTType = {
   PROGRAM:           "Program",
+  BLOCK_STMT:        "BlockStmt",
   AUTO_DECL:         "AutoDecl",
+  EXPR_STMT:         "ExprStmt",
+  IF_STMT:           "IfStmt",
+  WHILE_STMT:        "WhileStmt",
+  FOR_STMT:          "ForStmt",
+  FUNCTION_DECL:     "FunctionDecl",
+  RETURN_STMT:       "ReturnStmt",
+  BREAK_STMT:        "BreakStmt",
+  CONTINUE_STMT:     "ContinueStmt",
   ASSIGN_EXPR:       "AssignExpr",
   NUMBER_LITERAL:    "NumberLiteral",
   STRING_LITERAL:    "StringLiteral",
+  BOOLEAN_LITERAL:   "BooleanLiteral",
+  ARRAY_LITERAL:     "ArrayLiteral",
+  MEMBER_EXPR:       "MemberExpr",
   VARIABLE_REF:      "VariableRef",
   BINARY_EXPR:       "BinaryExpr",
   UNARY_EXPR:        "UnaryExpr",
@@ -344,7 +445,54 @@ class Parser {
     if (this._current().type === TokenType.AUTO) {
       return this._parseAutoDecl();
     }
-    return this._parseAssignment();
+    if (this._current().type === TokenType.FUNCTION) {
+      return this._parseFunctionDecl();
+    }
+    if (this._current().type === TokenType.IF) {
+      return this._parseIfStatement();
+    }
+    if (this._current().type === TokenType.WHILE) {
+      return this._parseWhileStatement();
+    }
+    if (this._current().type === TokenType.FOR) {
+      return this._parseForStatement();
+    }
+    if (this._current().type === TokenType.RETURN) {
+      return this._parseReturnStatement();
+    }
+    if (this._current().type === TokenType.BREAK) {
+      this._advance();
+      return { type: ASTType.BREAK_STMT };
+    }
+    if (this._current().type === TokenType.CONTINUE) {
+      this._advance();
+      return { type: ASTType.CONTINUE_STMT };
+    }
+    if (this._current().type === TokenType.LBRACE) {
+      return this._parseBlock();
+    }
+    return this._parseExpressionStatement();
+  }
+
+  _parseBlock() {
+    this._expect(TokenType.LBRACE);
+    const statements = [];
+    this._consumeStatementSeparators();
+    while (this._current().type !== TokenType.RBRACE) {
+      if (this._current().type === TokenType.EOF) {
+        throw new Error("语法错误: 代码块缺少右花括号");
+      }
+      statements.push(this._parseStatement());
+      if (this._current().type === TokenType.RBRACE) {
+        break;
+      }
+      if (!this._match(TokenType.SEMI)) {
+        throw new Error("语法错误: 语句之间需要使用换行或分号分隔");
+      }
+      this._consumeStatementSeparators();
+    }
+    this._expect(TokenType.RBRACE);
+    return { type: ASTType.BLOCK_STMT, statements };
   }
 
   _parseAutoDecl() {
@@ -359,17 +507,134 @@ class Parser {
     };
   }
 
+  _parseFunctionDecl() {
+    this._expect(TokenType.FUNCTION);
+    const name = this._expect(TokenType.IDENT).value;
+    this._expect(TokenType.LPAREN);
+    const params = [];
+    if (this._current().type !== TokenType.RPAREN) {
+      params.push(this._expect(TokenType.IDENT).value);
+      while (this._match(TokenType.COMMA)) {
+        params.push(this._expect(TokenType.IDENT).value);
+      }
+    }
+    this._expect(TokenType.RPAREN);
+    const body = this._parseBlock();
+    return {
+      type: ASTType.FUNCTION_DECL,
+      name,
+      params,
+      body,
+    };
+  }
+
+  _parseIfStatement() {
+    this._expect(TokenType.IF);
+    this._expect(TokenType.LPAREN);
+    const test = this._parseAssignment();
+    this._expect(TokenType.RPAREN);
+    const consequent = this._parseStatementBody();
+    let alternate = null;
+    if (this._match(TokenType.ELSE)) {
+      alternate = this._parseStatementBody();
+    }
+    return {
+      type: ASTType.IF_STMT,
+      test,
+      consequent,
+      alternate,
+    };
+  }
+
+  _parseWhileStatement() {
+    this._expect(TokenType.WHILE);
+    this._expect(TokenType.LPAREN);
+    const test = this._parseAssignment();
+    this._expect(TokenType.RPAREN);
+    return {
+      type: ASTType.WHILE_STMT,
+      test,
+      body: this._parseStatementBody(),
+    };
+  }
+
+  _parseForStatement() {
+    this._expect(TokenType.FOR);
+    this._expect(TokenType.LPAREN);
+
+    let init = null;
+    if (this._current().type !== TokenType.SEMI) {
+      init = this._parseForInitializer();
+    }
+    this._expect(TokenType.SEMI);
+
+    let test = null;
+    if (this._current().type !== TokenType.SEMI) {
+      test = this._parseAssignment();
+    }
+    this._expect(TokenType.SEMI);
+
+    let update = null;
+    if (this._current().type !== TokenType.RPAREN) {
+      update = this._parseAssignment();
+    }
+    this._expect(TokenType.RPAREN);
+
+    return {
+      type: ASTType.FOR_STMT,
+      init,
+      test,
+      update,
+      body: this._parseStatementBody(),
+    };
+  }
+
+  _parseForInitializer() {
+    if (this._current().type === TokenType.AUTO) {
+      return this._parseAutoDecl();
+    }
+    return this._parseExpressionStatement();
+  }
+
+  _parseReturnStatement() {
+    this._expect(TokenType.RETURN);
+    let argument = null;
+    if (this._current().type !== TokenType.SEMI &&
+        this._current().type !== TokenType.RBRACE &&
+        this._current().type !== TokenType.EOF) {
+      argument = this._parseAssignment();
+    }
+    return {
+      type: ASTType.RETURN_STMT,
+      argument,
+    };
+  }
+
+  _parseStatementBody() {
+    if (this._current().type === TokenType.LBRACE) {
+      return this._parseBlock();
+    }
+    return this._parseStatement();
+  }
+
+  _parseExpressionStatement() {
+    return {
+      type: ASTType.EXPR_STMT,
+      expression: this._parseAssignment(),
+    };
+  }
+
   _parseAssignment() {
     const left = this._parseConditional();
     if (!this._match(TokenType.ASSIGN)) {
       return left;
     }
-    if (left.type !== ASTType.VARIABLE_REF) {
-      throw new Error("赋值语法错误: 左侧必须是变量");
+    if (left.type !== ASTType.VARIABLE_REF && left.type !== ASTType.MEMBER_EXPR) {
+      throw new Error("赋值语法错误: 左侧必须是变量或数组成员");
     }
     return {
       type: ASTType.ASSIGN_EXPR,
-      name: left.name,
+      target: left,
       value: this._parseAssignment(),
     };
   }
@@ -467,41 +732,84 @@ class Parser {
       const argument = this._parseUnary();
       return { type: ASTType.UNARY_EXPR, operator: tok.value, argument };
     }
-    return this._parseCall();
+    return this._parsePostfix();
   }
 
-  // 函数调用 fn(args)
-  _parseCall() {
+  // 后缀表达式: 调用、成员访问、下标
+  _parsePostfix() {
     let expr = this._parsePrimary();
 
-    // 支持链式: fn(args) 或 expr(args) — 但当前只允许变量引用作为函数名
-    while (this._current().type === TokenType.LPAREN) {
-      this._advance(); // 吃掉 (
-      const args = [];
-      if (this._current().type !== TokenType.RPAREN) {
-        args.push(this._parseConditional());
-        while (this._match(TokenType.COMMA)) {
-          args.push(this._parseConditional());
+    while (true) {
+      if (this._current().type === TokenType.LPAREN) {
+        this._advance();
+        const args = [];
+        if (this._current().type !== TokenType.RPAREN) {
+          args.push(this._parseAssignment());
+          while (this._match(TokenType.COMMA)) {
+            args.push(this._parseAssignment());
+          }
         }
+        this._expect(TokenType.RPAREN);
+        if (expr.type === ASTType.VARIABLE_REF) {
+          expr = {
+            type: ASTType.CALL_EXPR,
+            name: expr.name,
+            args: args,
+          };
+          continue;
+        }
+        if (expr.type === ASTType.MEMBER_EXPR) {
+          expr = {
+            type: ASTType.CALL_EXPR,
+            callee: expr,
+            args: args,
+          };
+          continue;
+        }
+        throw new Error("函数调用语法错误: 目标不可调用");
       }
-      this._expect(TokenType.RPAREN);
-
-      // 函数名必须来自标识符
-      if (expr.type !== ASTType.VARIABLE_REF) {
-        throw new Error("函数调用语法错误: 函数名必须是标识符");
+      if (this._match(TokenType.DOT)) {
+        const property = this._expect(TokenType.IDENT);
+        expr = {
+          type: ASTType.MEMBER_EXPR,
+          object: expr,
+          property: property.value,
+          computed: false,
+        };
+        continue;
       }
-      expr = {
-        type: ASTType.CALL_EXPR,
-        name: expr.name,
-        args: args,
-      };
+      if (this._match(TokenType.LBRACKET)) {
+        const propertyExpr = this._parseAssignment();
+        this._expect(TokenType.RBRACKET);
+        expr = {
+          type: ASTType.MEMBER_EXPR,
+          object: expr,
+          property: propertyExpr,
+          computed: true,
+        };
+        continue;
+      }
+      break;
     }
 
     return expr;
   }
 
-  // 原子表达式: NUMBER, STRING, IDENT, ( expr )
+  // 原子表达式: NUMBER, STRING, BOOLEAN, ARRAY, IDENT, ( expr )
   _parsePrimary() {
+    if (this._current().type === TokenType.IF) {
+      return this._parseIfStatement();
+    }
+    if (this._current().type === TokenType.WHILE) {
+      return this._parseWhileStatement();
+    }
+    if (this._current().type === TokenType.FOR) {
+      return this._parseForStatement();
+    }
+    if (this._current().type === TokenType.LBRACE) {
+      return this._parseBlock();
+    }
+
     // 括号表达式
     if (this._match(TokenType.LPAREN)) {
       const expr = this._parseConditional();
@@ -521,6 +829,23 @@ class Parser {
       return { type: ASTType.STRING_LITERAL, value: strTok.value };
     }
 
+    const boolTok = this._match(TokenType.TRUE, TokenType.FALSE);
+    if (boolTok) {
+      return { type: ASTType.BOOLEAN_LITERAL, value: boolTok.value };
+    }
+
+    if (this._match(TokenType.LBRACKET)) {
+      const elements = [];
+      if (this._current().type !== TokenType.RBRACKET) {
+        elements.push(this._parseAssignment());
+        while (this._match(TokenType.COMMA)) {
+          elements.push(this._parseAssignment());
+        }
+      }
+      this._expect(TokenType.RBRACKET);
+      return { type: ASTType.ARRAY_LITERAL, elements };
+    }
+
     // 标识符（变量引用 / 函数引用）
     const identTok = this._match(TokenType.IDENT);
     if (identTok) {
@@ -535,21 +860,65 @@ class Parser {
 // 第五部分: Interpreter (解释器)
 // ============================
 class Interpreter {
-  constructor(builtins, maxVariables, ctx) {
+  constructor(builtins, maxVariables, ctx, limits) {
     this.builtins = builtins; // { name: function }
     this.maxVariables = maxVariables;
     this.ctx = ctx;
     this.scope = Object.create(null);
+    this.scopes = [this.scope];
     this.sealVarCache = Object.create(null);
+    this.limits = limits;
+    this.stepCount = 0;
+    this.loopCount = 0;
+    this.callDepth = 0;
+    this.loopDepth = 0;
+    this.functionDepth = 0;
   }
 
   eval(node) {
+    this._tick();
     switch (node.type) {
       case ASTType.PROGRAM:
         return this._evalProgram(node);
 
+      case ASTType.BLOCK_STMT:
+        return this._evalBlock(node);
+
       case ASTType.AUTO_DECL:
         return this._evalAutoDecl(node);
+
+      case ASTType.EXPR_STMT:
+        return this.eval(node.expression);
+
+      case ASTType.IF_STMT:
+        return this._evalIf(node);
+
+      case ASTType.WHILE_STMT:
+        return this._evalWhile(node);
+
+      case ASTType.FOR_STMT:
+        return this._evalFor(node);
+
+      case ASTType.FUNCTION_DECL:
+        return this._evalFunctionDecl(node);
+
+      case ASTType.RETURN_STMT:
+        if (this.functionDepth <= 0) {
+          throw new Error("return 只能在函数内使用");
+        }
+        throw new ReturnSignal(node.argument ? this.eval(node.argument) : false);
+
+      case ASTType.BREAK_STMT:
+        if (this.loopDepth <= 0) {
+          throw new Error("break 只能在循环内使用");
+        }
+        throw new BreakSignal();
+
+      case ASTType.CONTINUE_STMT:
+        if (this.loopDepth <= 0) {
+          throw new Error("continue 只能在循环内使用");
+        }
+        throw new ContinueSignal();
 
       case ASTType.ASSIGN_EXPR:
         return this._evalAssign(node);
@@ -559,6 +928,15 @@ class Interpreter {
 
       case ASTType.STRING_LITERAL:
         return node.value;
+
+      case ASTType.BOOLEAN_LITERAL:
+        return node.value;
+
+      case ASTType.ARRAY_LITERAL:
+        return this._evalArrayLiteral(node);
+
+      case ASTType.MEMBER_EXPR:
+        return this._evalMember(node);
 
       case ASTType.VARIABLE_REF:
         return this._evalVariableRef(node);
@@ -581,35 +959,78 @@ class Interpreter {
   }
 
   _evalProgram(node) {
-    let result = 0;
-    for (let i = 0; i < node.statements.length; i++) {
-      result = this.eval(node.statements[i]);
-    }
-    return result;
+    return this._evalStatementList(node.statements);
+  }
+
+  _evalBlock(node) {
+    return this._withScope(() => this._evalStatementList(node.statements));
   }
 
   _evalAutoDecl(node) {
     if (Object.prototype.hasOwnProperty.call(this.builtins, node.name)) {
       throw new Error("变量名不能与内置函数重名: " + node.name);
     }
-    if (Object.prototype.hasOwnProperty.call(this.scope, node.name)) {
+    if (Object.prototype.hasOwnProperty.call(this._currentScope(), node.name)) {
       throw new Error("变量已定义: " + node.name);
     }
-    if (Object.keys(this.scope).length >= this.maxVariables) {
+    if (Object.keys(this._currentScope()).length >= this.maxVariables) {
       throw new Error("变量数量过多（最大 " + this.maxVariables + " 个）");
     }
     const value = this.eval(node.initializer);
-    this.scope[node.name] = value;
+    this._currentScope()[node.name] = value;
     return value;
   }
 
   _evalAssign(node) {
     const value = this.eval(node.value);
-    return this._writeVariable(node.name, value);
+    return this._writeAssignable(node.target, value);
   }
 
   _evalVariableRef(node) {
     return this._readVariable(node.name);
+  }
+
+  _evalFunctionDecl(node) {
+    if (Object.prototype.hasOwnProperty.call(this.builtins, node.name)) {
+      throw new Error("函数名不能与内置函数重名: " + node.name);
+    }
+    if (Object.prototype.hasOwnProperty.call(this._currentScope(), node.name)) {
+      throw new Error("当前作用域已存在同名变量或函数: " + node.name);
+    }
+    if (node.params.length > this.limits.maxFunctionParams) {
+      throw new Error("函数参数过多（最大 " + this.limits.maxFunctionParams + " 个）");
+    }
+    const seen = Object.create(null);
+    for (let i = 0; i < node.params.length; i++) {
+      if (seen[node.params[i]]) {
+        throw new Error("函数参数重名: " + node.params[i]);
+      }
+      seen[node.params[i]] = true;
+    }
+    const fnValue = {
+      type: "user_function",
+      name: node.name,
+      params: node.params.slice(),
+      body: node.body,
+    };
+    this._currentScope()[node.name] = fnValue;
+    return fnValue;
+  }
+
+  _evalArrayLiteral(node) {
+    const result = [];
+    for (let i = 0; i < node.elements.length; i++) {
+      if (result.length >= this.limits.maxArrayLength) {
+        throw new Error("数组长度过大（最大 " + this.limits.maxArrayLength + " 项）");
+      }
+      result.push(this.eval(node.elements[i]));
+    }
+    return result;
+  }
+
+  _evalMember(node) {
+    const object = this.eval(node.object);
+    return this._readMemberValue(object, node);
   }
 
   _evalSealVariable(name) {
@@ -666,6 +1087,8 @@ class Interpreter {
   }
 
   _assignSealVariable(name, value) {
+    this._assertSealVariableWritable(name);
+
     const type = typeof value;
     if (type !== "number" && type !== "string") {
       throw new Error("不支持的赋值类型: " + type);
@@ -742,8 +1165,17 @@ class Interpreter {
   }
 
   _readVariable(name) {
-    if (Object.prototype.hasOwnProperty.call(this.scope, name)) {
-      return this.scope[name];
+    return this._readVariableWithPolicy(name, this._canUseImplicitSealFallback());
+  }
+
+  _readVariableWithPolicy(name, allowSealFallback) {
+    const localValue = this._findScopedValue(name);
+    if (localValue.found) {
+      return localValue.value;
+    }
+
+    if (!allowSealFallback) {
+      throw new Error("未定义的变量: " + name);
     }
 
     const resolvedName = this._resolveSealVariableName(name);
@@ -751,13 +1183,22 @@ class Interpreter {
   }
 
   _writeVariable(name, value) {
+    return this._writeVariableWithPolicy(name, value, this._canUseImplicitSealFallback());
+  }
+
+  _writeVariableWithPolicy(name, value, allowSealFallback) {
     if (Object.prototype.hasOwnProperty.call(this.builtins, name)) {
       throw new Error("不能给内置函数赋值: " + name);
     }
 
-    if (Object.prototype.hasOwnProperty.call(this.scope, name)) {
-      this.scope[name] = value;
+    const targetScope = this._findScopeContaining(name);
+    if (targetScope) {
+      targetScope[name] = value;
       return value;
+    }
+
+    if (!allowSealFallback) {
+      throw new Error("未定义的变量: " + name);
     }
 
     const targetName = this._assignAnySealVariable(name, value);
@@ -765,9 +1206,90 @@ class Interpreter {
     return value;
   }
 
+  _assertSealVariableWritable(name) {
+    if (this._isReadOnlySealVariable(name)) {
+      throw new Error("该海豹内置变量为只读: " + name);
+    }
+    if (this._isGroupScopedSealVariable(name) && !this._hasGroupWritePrivilege()) {
+      throw new Error("写入群变量需要权限等级 >= 50: " + name);
+    }
+  }
+
+  _isGroupScopedSealVariable(name) {
+    return /^\$g/u.test(name);
+  }
+
+  _isReadOnlySealVariable(name) {
+    const normalized = name.startsWith("$") ? name : "$" + name;
+    return READONLY_SEAL_VARIABLES.has(name) || READONLY_SEAL_VARIABLES.has(normalized);
+  }
+
+  _hasGroupWritePrivilege() {
+    return !!(this.ctx && typeof this.ctx.privilegeLevel === "number" && this.ctx.privilegeLevel >= 50);
+  }
+
+  _writeAssignable(target, value) {
+    if (target.type === ASTType.VARIABLE_REF) {
+      return this._writeVariable(target.name, value);
+    }
+    if (target.type === ASTType.MEMBER_EXPR) {
+      return this._writeMember(target, value);
+    }
+    throw new Error("赋值语法错误: 左侧不可赋值");
+  }
+
+  _writeMember(node, value) {
+    const object = this.eval(node.object);
+    const property = this._resolveMemberKey(node, object);
+    if (!Array.isArray(object)) {
+      throw new Error("类型错误: 只有数组支持成员赋值");
+    }
+    if (property === "length") {
+      throw new Error("数组 length 为只读");
+    }
+    if (!Number.isInteger(property) || property < 0) {
+      throw new Error("数组下标必须是非负整数");
+    }
+    if (property >= this.limits.maxArrayLength) {
+      throw new Error("数组长度过大（最大 " + this.limits.maxArrayLength + " 项）");
+    }
+    object[property] = value;
+    return value;
+  }
+
+  _readMemberValue(object, node) {
+    const property = this._resolveMemberKey(node, object);
+    if (Array.isArray(object)) {
+      if (property === "length") {
+        return object.length;
+      }
+      if (!Number.isInteger(property) || property < 0) {
+        throw new Error("数组下标必须是非负整数");
+      }
+      return property < object.length ? object[property] : false;
+    }
+    throw new Error("类型错误: 当前只支持数组成员访问");
+  }
+
+  _resolveMemberKey(node, object) {
+    if (!node.computed) {
+      return node.property;
+    }
+    const key = this.eval(node.property);
+    if (Array.isArray(object)) {
+      if (typeof key !== "number" || !Number.isInteger(key)) {
+        throw new Error("数组下标必须是整数");
+      }
+      return key;
+    }
+    return key;
+  }
+
   _toBool(value) {
+    if (typeof value === "boolean") return value;
     if (typeof value === "number") return value !== 0;
     if (typeof value === "string") return value !== "";
+    if (Array.isArray(value)) return value.length > 0;
     return !!value;
   }
 
@@ -779,15 +1301,19 @@ class Interpreter {
     return typeof value === "number" && !isNaN(value);
   }
 
+  _isFunction(value) {
+    return value && typeof value === "object" && value.type === "user_function";
+  }
+
   _evalBinary(node) {
     const op = node.operator;
 
     // 逻辑运算需要短路求值：先求值左侧，根据结果决定是否求值右侧
     if (op === "&&") {
-      return this._toBool(this.eval(node.left)) && this._toBool(this.eval(node.right)) ? 1 : 0;
+      return this._toBool(this.eval(node.left)) && this._toBool(this.eval(node.right));
     }
     if (op === "||") {
-      return this._toBool(this.eval(node.left)) || this._toBool(this.eval(node.right)) ? 1 : 0;
+      return this._toBool(this.eval(node.left)) || this._toBool(this.eval(node.right));
     }
 
     const left = this.eval(node.left);
@@ -798,7 +1324,7 @@ class Interpreter {
       case "+": {
         // 如果任一操作数是字符串，执行字符串拼接
         if (this._isString(left) || this._isString(right)) {
-          return String(left) + String(right);
+          return this._ensureStringSize(String(left) + String(right), "+");
         }
         this._checkNumber(left, "+");
         this._checkNumber(right, "+");
@@ -832,26 +1358,26 @@ class Interpreter {
       case ">":
         this._checkNumber(left, ">");
         this._checkNumber(right, ">");
-        return left > right ? 1 : 0;
+        return left > right;
       case ">=":
         this._checkNumber(left, ">=");
         this._checkNumber(right, ">=");
-        return left >= right ? 1 : 0;
+        return left >= right;
       case "<":
         this._checkNumber(left, "<");
         this._checkNumber(right, "<");
-        return left < right ? 1 : 0;
+        return left < right;
       case "<=":
         this._checkNumber(left, "<=");
         this._checkNumber(right, "<=");
-        return left <= right ? 1 : 0;
+        return left <= right;
       case "==": {
-        if (this._isNumber(left) && this._isNumber(right)) return left === right ? 1 : 0;
-        return String(left) === String(right) ? 1 : 0;
+        if (this._isNumber(left) && this._isNumber(right)) return left === right;
+        return this._deepEqual(left, right);
       }
       case "!=": {
-        if (this._isNumber(left) && this._isNumber(right)) return left !== right ? 1 : 0;
-        return String(left) !== String(right) ? 1 : 0;
+        if (this._isNumber(left) && this._isNumber(right)) return left !== right;
+        return !this._deepEqual(left, right);
       }
 
       default:
@@ -866,10 +1392,20 @@ class Interpreter {
         this._checkNumber(value, "-");
         return -value;
       case "!":
-        return this._toBool(value) ? 0 : 1;
+        return !this._toBool(value);
       default:
         throw new Error("内部错误: 未知的一元运算符 " + node.operator);
     }
+  }
+
+  _evalIf(node) {
+    if (this._toBool(this.eval(node.test))) {
+      return this.eval(node.consequent);
+    }
+    if (node.alternate) {
+      return this.eval(node.alternate);
+    }
+    return false;
   }
 
   _evalConditional(node) {
@@ -881,20 +1417,261 @@ class Interpreter {
     }
   }
 
+  _evalWhile(node) {
+    let result = false;
+    this.loopDepth++;
+    try {
+      while (this._toBool(this.eval(node.test))) {
+        this.loopCount++;
+        if (this.loopCount > this.limits.maxLoopIterations) {
+          throw new Error("循环次数过多（最大 " + this.limits.maxLoopIterations + " 次）");
+        }
+        try {
+          result = this.eval(node.body);
+        } catch (e) {
+          if (e instanceof BreakSignal) {
+            break;
+          }
+          if (e instanceof ContinueSignal) {
+            continue;
+          }
+          throw e;
+        }
+      }
+    } finally {
+      this.loopDepth--;
+    }
+    return result;
+  }
+
+  _evalFor(node) {
+    let result = false;
+    return this._withScope(() => {
+      if (node.init) {
+        result = this.eval(node.init);
+      }
+      this.loopDepth++;
+      try {
+        while (node.test ? this._toBool(this.eval(node.test)) : true) {
+          this.loopCount++;
+          if (this.loopCount > this.limits.maxLoopIterations) {
+            throw new Error("循环次数过多（最大 " + this.limits.maxLoopIterations + " 次）");
+          }
+          try {
+            result = this.eval(node.body);
+          } catch (e) {
+            if (e instanceof BreakSignal) {
+              break;
+            }
+            if (e instanceof ContinueSignal) {
+              if (node.update) {
+                this.eval(node.update);
+              }
+              continue;
+            }
+            throw e;
+          }
+          if (node.update) {
+            result = this.eval(node.update);
+          }
+        }
+      } finally {
+        this.loopDepth--;
+      }
+      return result;
+    });
+  }
+
   _evalCall(node) {
+    const args = node.args.map(arg => this.eval(arg));
+
+    if (node.callee) {
+      return this._evalMemberCall(node.callee, args);
+    }
+
     const name = node.name;
     const fn = this.builtins[name];
-    if (!fn) {
+    if (fn) {
+      return fn(args);
+    }
+
+    const userFn = this._readVariable(name);
+    if (!this._isFunction(userFn)) {
       throw new Error("未定义的函数: " + name);
     }
-    const args = node.args.map(arg => this.eval(arg));
-    return fn(args);
+    return this._invokeUserFunction(userFn, args);
+  }
+
+  _evalMemberCall(callee, args) {
+    const object = this.eval(callee.object);
+    const property = this._resolveMemberKey(callee, object);
+
+    if (!Array.isArray(object)) {
+      throw new Error("类型错误: 当前只支持数组方法调用");
+    }
+
+    switch (property) {
+      case "push":
+        if (args.length !== 1) {
+          throw new Error("push 方法需要 1 个参数");
+        }
+        if (object.length >= this.limits.maxArrayLength) {
+          throw new Error("数组长度过大（最大 " + this.limits.maxArrayLength + " 项）");
+        }
+        object.push(args[0]);
+        return object.length;
+      case "pop":
+        if (args.length !== 0) {
+          throw new Error("pop 方法不接受参数");
+        }
+        return object.length === 0 ? false : object.pop();
+      default:
+        throw new Error("未定义的数组方法: " + property);
+    }
+  }
+
+  _deepEqual(left, right) {
+    if (typeof left !== typeof right) return false;
+    if (Array.isArray(left) || Array.isArray(right)) {
+      if (!Array.isArray(left) || !Array.isArray(right)) return false;
+      if (left.length !== right.length) return false;
+      for (let i = 0; i < left.length; i++) {
+        if (!this._deepEqual(left[i], right[i])) return false;
+      }
+      return true;
+    }
+    return left === right;
+  }
+
+  _tick() {
+    this.stepCount++;
+    if (this.stepCount > this.limits.maxExecutionSteps) {
+      throw new Error("执行步数过多（最大 " + this.limits.maxExecutionSteps + " 步）");
+    }
+  }
+
+  _evalSource(source) {
+    if (typeof source !== "string") {
+      throw new Error("eval 需要 1 个字符串参数");
+    }
+    const ast = parseAndValidateSource(source);
+    return this.eval(ast);
   }
 
   _checkNumber(value, op) {
     if (!this._isNumber(value)) {
       throw new Error("类型错误: 运算符 " + op + " 需要数值类型");
     }
+  }
+
+  _invokeUserFunction(fnValue, args) {
+    if (args.length !== fnValue.params.length) {
+      throw new Error("函数 " + fnValue.name + " 参数数量错误: 期望 " + fnValue.params.length + " 个，实际为 " + args.length + " 个");
+    }
+    this.callDepth++;
+    if (this.callDepth > this.limits.maxCallDepth) {
+      this.callDepth--;
+      throw new Error("函数调用层数过深（最大 " + this.limits.maxCallDepth + " 层）");
+    }
+
+    this.functionDepth++;
+    try {
+      return this._withScope(() => {
+        for (let i = 0; i < fnValue.params.length; i++) {
+          this._currentScope()[fnValue.params[i]] = args[i];
+        }
+        try {
+          return this.eval(fnValue.body);
+        } catch (e) {
+          if (e instanceof ReturnSignal) {
+            return e.value;
+          }
+          throw e;
+        }
+      });
+    } finally {
+      this.functionDepth--;
+      this.callDepth--;
+    }
+  }
+
+  _canUseImplicitSealFallback() {
+    return this.functionDepth <= 0;
+  }
+
+  _ensureStringSize(value, op) {
+    if (typeof value === "string" && value.length > this.limits.maxStringLength) {
+      throw new Error("字符串结果过长（最大 " + this.limits.maxStringLength + " 字符，来源: " + op + "）");
+    }
+    return value;
+  }
+
+  _currentScope() {
+    return this.scopes[this.scopes.length - 1];
+  }
+
+  _evalStatementList(statements) {
+    let result = false;
+    for (let i = 0; i < statements.length; i++) {
+      result = this.eval(statements[i]);
+    }
+    return result;
+  }
+
+  _pushScope() {
+    this.scopes.push(Object.create(null));
+  }
+
+  _popScope() {
+    if (this.scopes.length <= 1) {
+      throw new Error("内部错误: 不能弹出全局作用域");
+    }
+    this.scopes.pop();
+  }
+
+  _findScopeContaining(name) {
+    for (let i = this.scopes.length - 1; i >= 0; i--) {
+      if (Object.prototype.hasOwnProperty.call(this.scopes[i], name)) {
+        return this.scopes[i];
+      }
+    }
+    return null;
+  }
+
+  _findScopedValue(name) {
+    const scope = this._findScopeContaining(name);
+    if (!scope) {
+      return { found: false, value: undefined };
+    }
+    return { found: true, value: scope[name] };
+  }
+
+  _withScope(fn) {
+    this._pushScope();
+    try {
+      return fn();
+    } finally {
+      this._popScope();
+    }
+  }
+}
+
+class BreakSignal extends Error {
+  constructor() {
+    super("break");
+  }
+}
+
+class ContinueSignal extends Error {
+  constructor() {
+    super("continue");
+  }
+}
+
+class ReturnSignal extends Error {
+  constructor(value) {
+    super("return");
+    this.value = value;
   }
 }
 
@@ -957,7 +1734,105 @@ function createBuiltins(diceFn, variableApi) {
     // 数字转字符串: str(15) => "15"
     str(args) {
       if (args.length !== 1 || typeof args[0] !== "number") throw new Error("str 函数需要 1 个数值参数");
-      return String(args[0]);
+      return variableApi.ensureStringSize(String(args[0]), "str");
+    },
+
+    len(args) {
+      if (args.length !== 1) throw new Error("len 函数需要 1 个参数");
+      if (typeof args[0] === "string" || Array.isArray(args[0])) return args[0].length;
+      throw new Error("len 函数只支持字符串或数组");
+    },
+
+    substr(args) {
+      if (args.length < 2 || args.length > 3) throw new Error("substr 函数需要 2 或 3 个参数");
+      if (typeof args[0] !== "string") throw new Error("substr 函数的第 1 个参数必须为字符串");
+      if (!Number.isInteger(args[1])) throw new Error("substr 函数的第 2 个参数必须为整数");
+      if (args.length === 3 && !Number.isInteger(args[2])) throw new Error("substr 函数的第 3 个参数必须为整数");
+      return variableApi.ensureStringSize(args[0].substr(args[1], args.length === 3 ? args[2] : undefined), "substr");
+    },
+
+    slice(args) {
+      if (args.length < 2 || args.length > 3) throw new Error("slice 函数需要 2 或 3 个参数");
+      if (typeof args[0] !== "string") throw new Error("slice 函数的第 1 个参数必须为字符串");
+      if (!Number.isInteger(args[1])) throw new Error("slice 函数的第 2 个参数必须为整数");
+      if (args.length === 3 && !Number.isInteger(args[2])) throw new Error("slice 函数的第 3 个参数必须为整数");
+      return variableApi.ensureStringSize(args[0].slice(args[1], args.length === 3 ? args[2] : undefined), "slice");
+    },
+
+    indexOf(args) {
+      if (args.length !== 2) throw new Error("indexOf 函数需要 2 个参数");
+      if (typeof args[0] !== "string" || typeof args[1] !== "string") {
+        throw new Error("indexOf 函数的参数必须都是字符串");
+      }
+      return args[0].indexOf(args[1]);
+    },
+
+    includes(args) {
+      if (args.length !== 2) throw new Error("includes 函数需要 2 个参数");
+      if (typeof args[0] !== "string" || typeof args[1] !== "string") {
+        throw new Error("includes 函数的参数必须都是字符串");
+      }
+      return args[0].includes(args[1]);
+    },
+
+    startsWith(args) {
+      if (args.length !== 2) throw new Error("startsWith 函数需要 2 个参数");
+      if (typeof args[0] !== "string" || typeof args[1] !== "string") {
+        throw new Error("startsWith 函数的参数必须都是字符串");
+      }
+      return args[0].startsWith(args[1]);
+    },
+
+    endsWith(args) {
+      if (args.length !== 2) throw new Error("endsWith 函数需要 2 个参数");
+      if (typeof args[0] !== "string" || typeof args[1] !== "string") {
+        throw new Error("endsWith 函数的参数必须都是字符串");
+      }
+      return args[0].endsWith(args[1]);
+    },
+
+    split(args) {
+      if (args.length !== 2) throw new Error("split 函数需要 2 个参数");
+      if (typeof args[0] !== "string" || typeof args[1] !== "string") {
+        throw new Error("split 函数的参数必须都是字符串");
+      }
+      const result = args[0].split(args[1]);
+      if (result.length > 256) {
+        throw new Error("split 结果过大（最大 256 项）");
+      }
+      for (let i = 0; i < result.length; i++) {
+        variableApi.ensureStringSize(result[i], "split");
+      }
+      return result;
+    },
+
+    join(args) {
+      if (args.length !== 2) throw new Error("join 函数需要 2 个参数");
+      if (!Array.isArray(args[0])) throw new Error("join 函数的第 1 个参数必须为数组");
+      if (typeof args[1] !== "string") throw new Error("join 函数的第 2 个参数必须为字符串");
+      return variableApi.ensureStringSize(args[0].map(function (item) { return String(item); }).join(args[1]), "join");
+    },
+
+    upper(args) {
+      if (args.length !== 1 || typeof args[0] !== "string") throw new Error("upper 函数需要 1 个字符串参数");
+      return variableApi.ensureStringSize(args[0].toUpperCase(), "upper");
+    },
+
+    lower(args) {
+      if (args.length !== 1 || typeof args[0] !== "string") throw new Error("lower 函数需要 1 个字符串参数");
+      return variableApi.ensureStringSize(args[0].toLowerCase(), "lower");
+    },
+
+    trim(args) {
+      if (args.length !== 1 || typeof args[0] !== "string") throw new Error("trim 函数需要 1 个字符串参数");
+      return variableApi.ensureStringSize(args[0].trim(), "trim");
+    },
+
+    eval(args) {
+      if (args.length !== 1 || typeof args[0] !== "string") {
+        throw new Error("eval 函数需要 1 个字符串参数");
+      }
+      return variableApi.evalSource(args[0]);
     },
 
     // 显式读取变量: get("HP")
@@ -965,7 +1840,7 @@ function createBuiltins(diceFn, variableApi) {
       if (args.length !== 1 || typeof args[0] !== "string") {
         throw new Error("get 函数需要 1 个字符串参数，如 get(\"HP\")");
       }
-      return variableApi.get(args[0]);
+      return variableApi.getExplicit(args[0]);
     },
 
     // 显式写入变量: set("HP", 10)
@@ -976,7 +1851,7 @@ function createBuiltins(diceFn, variableApi) {
       if (typeof args[0] !== "string") {
         throw new Error("set 函数的第 1 个参数必须为字符串变量名");
       }
-      return variableApi.set(args[0], args[1]);
+      return variableApi.setExplicit(args[0], args[1]);
     },
 
     // 随机选择: choose("a", "b", "c") → 自动掷 1d3 并返回对应字符串
@@ -1039,11 +1914,25 @@ function createBuiltins(diceFn, variableApi) {
 const PUNCTUATION_MAP = {
   "（": "(",
   "）": ")",
+  "【": "[",
+  "】": "]",
+  "「": "{",
+  "」": "}",
+  "｛": "{",
+  "｝": "}",
+  "［": "[",
+  "］": "]",
   "，": ",",
+  "、": ",",
+  "。": ".",
   "；": ";",
   "：": ":",
   "？": "?",
   "！": "!",
+  "“": '"',
+  "”": '"',
+  "‘": "'",
+  "’": "'",
   "＋": "+",
   "－": "-",
   "＊": "*",
@@ -1054,47 +1943,111 @@ const PUNCTUATION_MAP = {
   "＝": "=",
   "＆": "&",
   "｜": "|",
+  "．": ".",
+  "～": "~",
+  "　": " ",
 };
+
+const READONLY_SEAL_VARIABLES = new Set([
+  "$t玩家",
+  "$t玩家_RAW",
+  "$tQQ昵称",
+  "$t账号ID",
+  "$t账号ID_RAW",
+  "$tQQ",
+  "$t群名",
+  "$t群号",
+  "$t群号_RAW",
+  "$t群组骰子面数",
+  "$t个人骰子面数",
+  "$t骰子账号",
+  "$t骰子昵称",
+  "$tDate",
+  "$tYear",
+  "$tMonth",
+  "$tDay",
+  "$tWeekday",
+  "$tHour",
+  "$tMinute",
+  "$tSecond",
+  "$tTimestamp",
+  "$t文本长度",
+  "$t平台",
+  "$t游戏模式",
+  "$t消息类型",
+  "$t当前记录",
+  "$t权限等级",
+  "$tMsgID",
+  "$t日志开启",
+  "娱乐:今日人品",
+  "常量:APPNAME",
+  "常量:VERSION",
+]);
 
 function normalizePunctuation(source) {
   let result = "";
   let inString = false;
+  let stringMode = "single";
   let escape = false;
   let stringEndChar = '"';
 
   for (let i = 0; i < source.length; i++) {
     const ch = source[i];
+    const three = source.slice(i, i + 3);
 
     if (inString) {
-      if (escape) {
+      if (stringMode === "triple") {
+        if (three === '"""') {
+          result += '"""';
+          i += 2;
+          inString = false;
+          stringMode = "single";
+          stringEndChar = '"';
+          continue;
+        }
         result += ch;
-        escape = false;
         continue;
-      }
-      if (ch === "\\") {
+      } else {
+        if (escape) {
+          result += ch;
+          escape = false;
+          continue;
+        }
+        if (ch === "\\") {
+          result += ch;
+          escape = true;
+          continue;
+        }
+        if (ch === stringEndChar) {
+          result += '"';
+          inString = false;
+          stringEndChar = '"';
+          continue;
+        }
         result += ch;
-        escape = true;
         continue;
       }
-      if (ch === stringEndChar) {
-        result += '"';
-        inString = false;
-        stringEndChar = '"';
-        continue;
-      }
-      result += ch;
-      continue;
     }
 
+    if (three === '"""') {
+      result += '"""';
+      i += 2;
+      inString = true;
+      stringMode = "triple";
+      stringEndChar = '"';
+      continue;
+    }
     if (ch === '"') {
       result += ch;
       inString = true;
+      stringMode = "single";
       stringEndChar = '"';
       continue;
     }
     if (ch === "“" || ch === "”") {
       result += '"';
       inString = true;
+      stringMode = "single";
       stringEndChar = "”";
       continue;
     }
@@ -1132,9 +2085,43 @@ const MAX_EXPR_LENGTH = 512;
 const MAX_AST_DEPTH = 256;
 const MAX_STATEMENTS = 64;
 const MAX_VARIABLES = 64;
+const MAX_EXECUTION_STEPS = 10000;
+const MAX_LOOP_ITERATIONS = 1000;
+const MAX_ARRAY_LENGTH = 256;
+const MAX_CALL_DEPTH = 64;
+const MAX_FUNCTION_PARAMS = 16;
+const MAX_STRING_LENGTH = 4096;
 const DEFAULT_OUTPUT_TEMPLATE = "由于\n```\n{expr}\n```\n{user} 得到了结果\n{result}";
 
 function evaluate(source, diceFn, ctx) {
+  const ast = parseAndValidateSource(source);
+  const builtins = createBuiltins(diceFn, null);
+  const interpreter = new Interpreter(builtins, MAX_VARIABLES, ctx, {
+    maxExecutionSteps: MAX_EXECUTION_STEPS,
+    maxLoopIterations: MAX_LOOP_ITERATIONS,
+    maxArrayLength: MAX_ARRAY_LENGTH,
+    maxCallDepth: MAX_CALL_DEPTH,
+    maxFunctionParams: MAX_FUNCTION_PARAMS,
+    maxStringLength: MAX_STRING_LENGTH,
+  });
+  interpreter.builtins = createBuiltins(diceFn, {
+    getExplicit(name) {
+      return interpreter._readVariableWithPolicy(name, true);
+    },
+    setExplicit(name, value) {
+      return interpreter._writeVariableWithPolicy(name, value, true);
+    },
+    ensureStringSize(value, op) {
+      return interpreter._ensureStringSize(value, op);
+    },
+    evalSource(source) {
+      return interpreter._evalSource(source);
+    },
+  });
+  return interpreter.eval(ast);
+}
+
+function parseAndValidateSource(source) {
   source = normalizePunctuation(source);
   if (source.length > MAX_EXPR_LENGTH) {
     throw new Error("表达式过长（最大 " + MAX_EXPR_LENGTH + " 字符）");
@@ -1149,17 +2136,7 @@ function evaluate(source, diceFn, ctx) {
   if (getAstDepth(ast) > MAX_AST_DEPTH) {
     throw new Error("表达式嵌套过深（最大 " + MAX_AST_DEPTH + " 层）");
   }
-  const builtins = createBuiltins(diceFn, null);
-  const interpreter = new Interpreter(builtins, MAX_VARIABLES, ctx);
-  interpreter.builtins = createBuiltins(diceFn, {
-    get(name) {
-      return interpreter._readVariable(name);
-    },
-    set(name, value) {
-      return interpreter._writeVariable(name, value);
-    },
-  });
-  return interpreter.eval(ast);
+  return ast;
 }
 
 function getAstDepth(root) {
@@ -1179,11 +2156,62 @@ function getAstDepth(root) {
           stack.push({ node: current.node.statements[i], depth: current.depth + 1 });
         }
         break;
+      case ASTType.BLOCK_STMT:
+        for (let i = 0; i < current.node.statements.length; i++) {
+          stack.push({ node: current.node.statements[i], depth: current.depth + 1 });
+        }
+        break;
       case ASTType.AUTO_DECL:
         stack.push({ node: current.node.initializer, depth: current.depth + 1 });
         break;
+      case ASTType.EXPR_STMT:
+        stack.push({ node: current.node.expression, depth: current.depth + 1 });
+        break;
+      case ASTType.IF_STMT:
+        stack.push({ node: current.node.test, depth: current.depth + 1 });
+        stack.push({ node: current.node.consequent, depth: current.depth + 1 });
+        if (current.node.alternate) {
+          stack.push({ node: current.node.alternate, depth: current.depth + 1 });
+        }
+        break;
+      case ASTType.WHILE_STMT:
+        stack.push({ node: current.node.test, depth: current.depth + 1 });
+        stack.push({ node: current.node.body, depth: current.depth + 1 });
+        break;
+      case ASTType.FOR_STMT:
+        if (current.node.init) {
+          stack.push({ node: current.node.init, depth: current.depth + 1 });
+        }
+        if (current.node.test) {
+          stack.push({ node: current.node.test, depth: current.depth + 1 });
+        }
+        if (current.node.update) {
+          stack.push({ node: current.node.update, depth: current.depth + 1 });
+        }
+        stack.push({ node: current.node.body, depth: current.depth + 1 });
+        break;
+      case ASTType.FUNCTION_DECL:
+        stack.push({ node: current.node.body, depth: current.depth + 1 });
+        break;
+      case ASTType.RETURN_STMT:
+        if (current.node.argument) {
+          stack.push({ node: current.node.argument, depth: current.depth + 1 });
+        }
+        break;
       case ASTType.ASSIGN_EXPR:
+        stack.push({ node: current.node.target, depth: current.depth + 1 });
         stack.push({ node: current.node.value, depth: current.depth + 1 });
+        break;
+      case ASTType.ARRAY_LITERAL:
+        for (let i = 0; i < current.node.elements.length; i++) {
+          stack.push({ node: current.node.elements[i], depth: current.depth + 1 });
+        }
+        break;
+      case ASTType.MEMBER_EXPR:
+        stack.push({ node: current.node.object, depth: current.depth + 1 });
+        if (current.node.computed) {
+          stack.push({ node: current.node.property, depth: current.depth + 1 });
+        }
         break;
       case ASTType.BINARY_EXPR:
         stack.push({ node: current.node.left, depth: current.depth + 1 });
@@ -1218,9 +2246,9 @@ function main() {
   }
 
   // 创建或获取扩展（完全遵循官方示例 004 模式）
-  let ext = seal.ext.find("complex-dice-v2");
+  let ext = seal.ext.find("complex-dice-v2-dev");
   if (!ext) {
-    ext = seal.ext.new("complex-dice-v2", "shimakaze", "1.4.0");
+    ext = seal.ext.new("complex-dice-v2-dev", "shimakaze", "1.5.0-dev");
   }
 
   // 创建 .cd 命令（在 if 块外部，确保即使扩展已存在也能注册命令）
@@ -1228,10 +2256,16 @@ function main() {
   cmdCd.name = "cd";
   cmdCd.help = "复杂骰子表达式求值\n" +
                "用法: .cd <表达式>\n" +
-               "支持: 多行表达式 auto 临时变量 Unicode 变量 通用赋值 海豹变量 + - * / % 比较 逻辑 三元 字符串拼接\n" +
-               "函数: dice(\"1d20\") max() min() floor() ceil() round() abs() str() get() set() choose() wchoose()\n" +
-               "示例: .cd auto 攻击 = dice(\"1d20\")\nauto 总值 = 攻击 + 5\n总值 > 10 ? \"命中\" : \"未命中\"\n" +
-               "示例: .cd set(\"HP\", get(\"HP\") + 10)";
+               "实验支持: true/false if/else while for break continue function return 数组 [] push pop length eval #注释 三引号多行字符串\n" +
+               "作用域: block 建作用域, 数组按引用传参, 函数内默认不隐式访问海豹变量\n" +
+               "变量规则: $g* 仅权限等级>=50可写; 指定海豹内置变量只读\n" +
+               "字符串: \"...\" 为单行, \"\"\"...\"\"\" 为多行\n" +
+               "安全限制: 执行步数/循环次数/数组长度/字符串长度/调用深度/函数参数数量均有限制\n" +
+               "示例: .cd function fib(n) { if (n <= 1) { return n } return fib(n - 1) + fib(n - 2) }\nfib(6)\n" +
+               "示例: .cd { auto a = [1, 2]; a.push(3); a.length }\n" +
+               "示例: .cd \"\"\"第一行\n第二行\"\"\"\n" +
+               "示例: .cd set(\"$g测试方法\", \"function fib(n) {\\n  if (n <= 1) {\\n    return n\\n  }\\n  return fib(n - 1) + fib(n - 2)\\n}\\nfib(6)\")\n" +
+               "示例: .cd eval(get(\"$g测试方法\"))";
   cmdCd.allowDelegate = true;
   cmdCd.disabledInPrivate = false;
 
